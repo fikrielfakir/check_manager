@@ -14,8 +14,14 @@ from .components.cheque_form import ChequeFormFrame
 from .components.cheque_list import ChequeListFrame
 from .components.settings import SettingsFrame
 from .components.reports import ReportsFrame
+from .components.enhanced_dashboard import EnhancedDashboardFrame
+from .components.mobile_responsive import MobileDashboard, DarkModeManager, KeyboardShortcutManager
+from .components.advanced_search import AdvancedSearchFrame
 from .dialogs.login_dialog import LoginDialog
 from utils.theme import ThemeManager
+from security.security_manager import SecurityManager
+from analytics.advanced_analytics import AdvancedAnalytics
+from automation.smart_automation import SmartAutomation
 
 class MainWindow:
     """Fenêtre principale de l'application"""
@@ -27,8 +33,17 @@ class MainWindow:
         self.logger = logging.getLogger(__name__)
         self.current_user = None
         
+        # Initialize advanced components
+        self.security_manager = SecurityManager(db_manager, config)
+        self.analytics = AdvancedAnalytics(db_manager)
+        self.automation = SmartAutomation(db_manager, config)
+        
         # Gestionnaire de thème
         self.theme_manager = ThemeManager()
+        self.dark_mode_manager = DarkModeManager()
+        
+        # Keyboard shortcuts
+        self.keyboard_manager = None
         
         # Configuration de la fenêtre
         self.setup_window()
@@ -40,6 +55,9 @@ class MainWindow:
         
         # Interface utilisateur
         self.setup_ui()
+        
+        # Initialize keyboard shortcuts
+        self.keyboard_manager = KeyboardShortcutManager(self.root)
         
         # Démarrage des tâches périodiques
         self.start_periodic_tasks()
@@ -118,10 +136,21 @@ class MainWindow:
         # Menu Outils
         tools_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Outils", menu=tools_menu)
+        tools_menu.add_command(label="🔍 Recherche Avancée", command=self.show_advanced_search)
+        tools_menu.add_command(label="🤖 Automatisation", command=self.show_automation_panel)
+        tools_menu.add_separator()
         tools_menu.add_command(label="Paramètres", command=self.open_settings)
         tools_menu.add_command(label="Notifications", command=self.show_notifications)
         tools_menu.add_separator()
         tools_menu.add_command(label="Vérifier les échéances", command=self.check_due_dates)
+        
+        # Menu Affichage
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Affichage", menu=view_menu)
+        view_menu.add_command(label="🌙 Basculer Mode Sombre", command=self.toggle_dark_mode)
+        view_menu.add_command(label="📱 Vue Mobile", command=self.toggle_mobile_view)
+        view_menu.add_separator()
+        view_menu.add_command(label="⌨️ Raccourcis Clavier", command=self.show_keyboard_shortcuts)
         
         # Menu Rapports
         reports_menu = tk.Menu(menubar, tearoff=0)
@@ -154,11 +183,13 @@ class MainWindow:
         
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
         
+        ttk.Button(toolbar, text="🔍 Recherche+", command=self.show_advanced_search).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="📤 Exporter", command=self.export_data).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="📋 Rapports", command=self.show_reports).pack(side=tk.LEFT, padx=2)
         
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
         
+        ttk.Button(toolbar, text="🤖 Auto", command=self.show_automation_panel).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="⚙️ Paramètres", command=self.open_settings).pack(side=tk.LEFT, padx=2)
         
         # Informations utilisateur (à droite)
@@ -173,8 +204,8 @@ class MainWindow:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Onglet Tableau de bord
-        self.dashboard_frame = DashboardFrame(self.notebook, self.db, self.current_user)
+        # Onglet Tableau de bord avancé
+        self.dashboard_frame = EnhancedDashboardFrame(self.notebook, self.db, self.current_user, self.config)
         self.notebook.add(self.dashboard_frame, text="📊 Tableau de bord")
         
         # Onglet Nouveau chèque
@@ -184,6 +215,15 @@ class MainWindow:
         # Onglet Liste des chèques
         self.cheque_list_frame = ChequeListFrame(self.notebook, self.db, self.current_user)
         self.notebook.add(self.cheque_list_frame, text="📋 Liste des chèques")
+        
+        # Onglet Recherche avancée
+        self.advanced_search_frame = AdvancedSearchFrame(
+            self.notebook, self.db, self.on_search_results
+        )
+        self.notebook.add(self.advanced_search_frame, text="🔍 Recherche+")
+        
+        # Mobile dashboard (hidden by default)
+        self.mobile_dashboard = None
         
         # Onglet Rapports
         self.reports_frame = ReportsFrame(self.notebook, self.db, self.current_user)
@@ -229,6 +269,9 @@ class MainWindow:
             # Créer les notifications d'échéance
             self.db.create_due_notifications()
             
+            # Run automation tasks
+            self.run_automation_tasks()
+            
             # Compter les notifications non lues
             notifications = self.db.get_notifications(self.current_user['id'], unread_only=True)
             count = len(notifications)
@@ -239,6 +282,19 @@ class MainWindow:
                 self.status_var.set(f"{count} notification(s) non lue(s)")
         except Exception as e:
             self.logger.error(f"Erreur lors de la vérification des notifications: {e}")
+    
+    def run_automation_tasks(self):
+        """Run periodic automation tasks"""
+        try:
+            # Send automated reminders
+            reminder_result = self.automation.send_automated_reminders()
+            
+            # Log automation activity
+            if reminder_result['sms_sent'] > 0 or reminder_result['emails_sent'] > 0:
+                self.logger.info(f"Automation: {reminder_result['sms_sent']} SMS, {reminder_result['emails_sent']} emails sent")
+                
+        except Exception as e:
+            self.logger.error(f"Error in automation tasks: {e}")
     
     def update_time(self):
         """Met à jour l'affichage de l'heure"""
@@ -266,6 +322,45 @@ class MainWindow:
     def show_reports(self):
         """Affiche les rapports"""
         self.notebook.select(3)  # Onglet rapports
+    
+    def show_advanced_search(self):
+        """Show advanced search"""
+        self.notebook.select(3)  # Advanced search tab
+    
+    def on_search_results(self, results):
+        """Handle search results from advanced search"""
+        # Switch to list view and update with results
+        self.notebook.select(2)  # List tab
+        # Update list with filtered results (would need to implement this method)
+    
+    def show_automation_panel(self):
+        """Show automation control panel"""
+        from .dialogs.automation_dialog import AutomationDialog
+        AutomationDialog(self.root, self.automation, self.current_user)
+    
+    def toggle_dark_mode(self):
+        """Toggle dark mode"""
+        self.dark_mode_manager.toggle_dark_mode(self.root)
+        self.status_var.set("Mode sombre basculé")
+    
+    def toggle_mobile_view(self):
+        """Toggle mobile view"""
+        if self.mobile_dashboard is None:
+            # Create mobile dashboard
+            mobile_window = tk.Toplevel(self.root)
+            mobile_window.title("📱 Vue Mobile")
+            mobile_window.geometry("400x800")
+            
+            self.mobile_dashboard = MobileDashboard(mobile_window, self.db, self.current_user)
+            self.mobile_dashboard.pack(fill=tk.BOTH, expand=True)
+        else:
+            # Focus existing mobile window
+            self.mobile_dashboard.master.lift()
+    
+    def show_keyboard_shortcuts(self):
+        """Show keyboard shortcuts help"""
+        if self.keyboard_manager:
+            self.keyboard_manager.show_shortcuts_help()
     
     def open_settings(self):
         """Ouvre les paramètres"""
